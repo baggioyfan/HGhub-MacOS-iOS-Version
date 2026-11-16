@@ -1,27 +1,80 @@
 name: Build macOS Release
 
+# 手动触发时可任选要构建的架构（可多选）；推送到 main 默认只构建 Apple Silicon。
 on:
   workflow_dispatch:
+    inputs:
+      build_arm64:
+        description: "Apple Silicon (arm64) → HGhub_<ver>_arm64.dmg"
+        type: boolean
+        default: true
+      build_x64:
+        description: "Intel (x64) → HGhub_<ver>_x64.dmg"
+        type: boolean
+        default: false
+      build_universal:
+        description: "通用双架构版 (universal) → HGhub_<ver>_universal.dmg"
+        type: boolean
+        default: false
   push:
     branches: ["main"]
 
 jobs:
+  # 根据触发方式与勾选项生成构建矩阵：勾几个就建几个
+  plan:
+    name: 规划构建目标
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      archs: ${{ steps.plan.outputs.archs }}
+    steps:
+      - name: 解析构建目标
+        id: plan
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            A="${{ inputs.build_arm64 }}"
+            X="${{ inputs.build_x64 }}"
+            U="${{ inputs.build_universal }}"
+            echo "触发方式: 手动触发 (arm64=$A x64=$X universal=$U)"
+          else
+            # push 到 main：只出 Apple Silicon 包，其余按需手动补建
+            A="true"; X="false"; U="false"
+            echo "触发方式: push → 默认仅构建 arm64"
+          fi
+
+          items=()
+          archs=()
+          if [[ "$A" == "true" ]]; then
+            items+=('{"target":"aarch64-apple-darwin","name":"Apple Silicon (arm64)","arch":"arm64"}')
+            archs+=("arm64")
+          fi
+          if [[ "$X" == "true" ]]; then
+            items+=('{"target":"x86_64-apple-darwin","name":"Intel (x64)","arch":"x64"}')
+            archs+=("x64")
+          fi
+          if [[ "$U" == "true" ]]; then
+            items+=('{"target":"universal-apple-darwin","name":"Universal (通用版)","arch":"universal"}')
+            archs+=("universal")
+          fi
+
+          if [ "${#items[@]}" -eq 0 ]; then
+            echo "::error::未勾选任何构建目标，请在手动触发时至少选择一种架构"
+            exit 1
+          fi
+
+          matrix="{\"include\":[$(IFS=,; echo "${items[*]}")]}"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "archs=$(IFS=,; echo "${archs[*]}")" >> "$GITHUB_OUTPUT"
+          echo "构建矩阵: $matrix"
+
   macos:
     name: macOS (${{ matrix.name }})
+    needs: plan
     runs-on: macos-latest
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - target: aarch64-apple-darwin
-            name: Apple Silicon (arm64)
-            arch: arm64
-          - target: x86_64-apple-darwin
-            name: Intel (x64)
-            arch: x64
-          - target: universal-apple-darwin
-            name: Universal (通用版)
-            arch: universal
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     steps:
       - uses: actions/checkout@v4
@@ -98,7 +151,7 @@ jobs:
 
   publish-release:
     name: 发布 GitHub Release
-    needs: [macos]
+    needs: [plan, macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -120,6 +173,44 @@ jobs:
           V="$(node -p "require('./src-tauri/tauri.conf.json').version")"
           echo "version=$V" >> "$GITHUB_OUTPUT"
 
+      - name: 生成下载说明
+        id: notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ARCHS: ${{ needs.plan.outputs.archs }}
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          ARCHS="$RUN_ARCHS"
+
+          # 合并 Release 上已存在的同版本安装包，避免增量构建后说明与实际附件不符
+          EXIST="$(gh release view "v${V}-macos" --json assets --jq '.assets[].name' 2>/dev/null || true)"
+          for a in arm64 x64 universal; do
+            if echo "$EXIST" | grep -q "HGhub_${V}_${a}.dmg"; then
+              case ",$ARCHS," in *",$a,"*) ;; *) ARCHS="${ARCHS},${a}" ;; esac
+            fi
+          done
+          ARCHS="${ARCHS#,}"
+
+          DL="" MISSING=""
+          case ",$ARCHS," in *,arm64,*) DL="${DL}- **Apple Silicon (M1/M2/M3/M4 系列芯片)**: 推荐下载 \`HGhub_${V}_arm64.dmg\`"$'\n';; esac
+          case ",$ARCHS," in *,x64,*) DL="${DL}- **Intel 芯片**: 推荐下载 \`HGhub_${V}_x64.dmg\`"$'\n';; esac
+          case ",$ARCHS," in *,universal,*) DL="${DL}- **通用双架构版 (全机型支持)**: 推荐下载 \`HGhub_${V}_universal.dmg\`"$'\n';; esac
+          for a in arm64 x64 universal; do
+            case ",$ARCHS," in
+              *",$a,"*) ;;
+              *) MISSING="${MISSING}\`$a\` " ;;
+            esac
+          done
+          if [ -n "$MISSING" ]; then
+            DL="${DL}"$'\n'"本次未构建：${MISSING}——需要时在 Actions 里手动触发「Build macOS Release」并勾选对应架构即可补发。"$'\n'
+          fi
+          {
+            echo 'dl<<EOF'
+            echo "$DL"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - name: 发布 Release
         uses: softprops/action-gh-release@v2
         with:
@@ -136,10 +227,7 @@ jobs:
             - **全功能媒体网关与原生交互**：支持最新鉴权播放接口、原生叠加红绿灯标题栏、影院模式、画中画及深浅主题切换。
 
             ### 下载说明
-            - **Apple Silicon (M1/M2/M3/M4 系列芯片)**: 推荐下载 `HGhub_${{ steps.ver.outputs.version }}_arm64.dmg`
-            - **Intel 芯片**: 推荐下载 `HGhub_${{ steps.ver.outputs.version }}_x64.dmg`
-            - **通用双架构版 (全机型支持)**: 推荐下载 `HGhub_${{ steps.ver.outputs.version }}_universal.dmg`
-
+            ${{ steps.notes.outputs.dl }}
             ### macOS 首次打开说明（绕过未签名提示）
             由于开源个人构建未购买苹果开发者企业证书签名与公证，首次打开若提示“已损坏”或“无法打开”，请在「终端」中执行以下命令清除隔离属性：
             ```bash

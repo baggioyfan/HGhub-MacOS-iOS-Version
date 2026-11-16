@@ -70,7 +70,7 @@
   - 拖动进度条或遇到网络波动时，支持非致命卡顿自动重连与最高 4 次静默解码恢复，片尾自动触发下一集连播。
 
 ### 💻 macOS 桌面端体验
-- **三架构完整构建**：同时提供 **Apple Silicon (`arm64`)**、**Intel (`x64`)** 与 **Universal (`通用双架构`)** `.dmg` 安装包及 `.app.tar.gz` 免安装版。
+- **三架构按需构建**：CI 支持 **Apple Silicon (`arm64`)**、**Intel (`x64`)** 与 **Universal (`通用双架构`)** 三种 `.dmg` 安装包及 `.app.tar.gz` 免安装版；推送到 `main` 默认只构建 `arm64`，其余架构在 Actions 里手动勾选补建。
 - **原生 Overlay 沉浸式标题栏**：适配 macOS 原生圆角窗口与交通灯（红绿灯）按钮垂直居中，支持深色 / 浅色 Fluent 主题切换、影院模式、画中画（PiP）、侧边选集/评论停靠栏与全键盘快捷键控制。
 
 ### 🎬 全功能内容聚合
@@ -155,6 +155,21 @@ pnpm tauri ios init
 pnpm build
 pnpm tauri ios build --no-sign --ci --features custom-protocol
 ```
+
+### CI 构建（GitHub Actions）
+
+`Build macOS Release` 工作流可自由选择要构建的架构：
+
+- **推送到 `main`**：默认只构建 Apple Silicon (`arm64`)，节省 macOS 构建额度；
+- **手动触发（Run workflow）**：出现三个独立勾选框，勾几个就建几个（可任意组合）：
+
+| 勾选项 | 产物 |
+| :--- | :--- |
+| `build_arm64` | `HGhub_<版本>_arm64.dmg` |
+| `build_x64` | `HGhub_<版本>_x64.dmg` |
+| `build_universal` | `HGhub_<版本>_universal.dmg` |
+
+已发布的安装包会累积到同一个 `v<版本>-macos` Release 中，Release 说明会自动列出本次构建的架构与尚未构建的架构。
 
 ---
 
